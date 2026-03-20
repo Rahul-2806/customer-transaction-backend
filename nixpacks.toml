@@ -1,5 +1,2 @@
 [phases.setup]
 nixPkgs = ["libgomp", "gcc", "stdenv.cc.cc.lib"]
-
-[variables]
-PYTHON_VERSION = "3.11"
