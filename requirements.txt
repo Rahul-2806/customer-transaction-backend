@@ -7,5 +7,7 @@ lightgbm
 xgboost
 catboost
 joblib
+huggingface_hub
+hf_xet
 python-multipart
 setuptools

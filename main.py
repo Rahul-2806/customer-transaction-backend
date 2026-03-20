@@ -1,5 +1,4 @@
-import os, json, pickle, time
-import joblib
+import os, json, time
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException
@@ -10,31 +9,50 @@ from typing import List
 app = FastAPI(title="Customer Transaction Prediction API", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Models can be in local ./models/ folder OR downloaded from HF
-MODELS_DIR = os.getenv("MODELS_DIR", "models")
+HF_REPO    = "RAHULSR2806/customer-transaction-models"
+MODELS_DIR = "models"
+os.makedirs(MODELS_DIR, exist_ok=True)
 
-lgb_models     = None
-xgb_models     = None
-cat_models     = None
+lgb_models      = None
+xgb_models      = None
+cat_models      = None
 ensemble_config = None
-models_loaded  = False
+models_loaded   = False
 
 def load_models():
     global lgb_models, xgb_models, cat_models, ensemble_config, models_loaded
     try:
-        print(f"📂 Loading models from {MODELS_DIR}...")
-        lgb_models = joblib.load(f"{MODELS_DIR}/lgb_models.pkl")
-        print("✅ LightGBM loaded")
-        xgb_models = joblib.load(f"{MODELS_DIR}/xgb_models.pkl")
-        print("✅ XGBoost loaded")
-        cat_models = joblib.load(f"{MODELS_DIR}/cat_models.pkl")
-        print("✅ CatBoost loaded")
-        with open(f"{MODELS_DIR}/ensemble_config.json", "r") as f: ensemble_config = json.load(f)
-        print("✅ Config loaded")
+        import joblib
+        from huggingface_hub import hf_hub_download
+
+        # Check if models already exist locally
+        files_exist = all(os.path.exists(f"{MODELS_DIR}/{f}") for f in ["lgb_models.pkl","xgb_models.pkl","cat_models.pkl","ensemble_config.json"])
+
+        if not files_exist:
+            print("📥 Downloading models from HuggingFace...")
+            for fname in ["lgb_models.pkl","xgb_models.pkl","cat_models.pkl","ensemble_config.json"]:
+                print(f"  Downloading {fname}...")
+                path = hf_hub_download(repo_id=HF_REPO, filename=fname, repo_type="dataset", local_dir=MODELS_DIR)
+                print(f"  ✅ {fname} ready")
+        else:
+            print("📂 Using cached models...")
+
+        print("🔄 Loading models into memory...")
+        lgb_models      = joblib.load(f"{MODELS_DIR}/lgb_models.pkl")
+        print(f"  ✅ LightGBM loaded ({len(lgb_models)} folds)")
+        xgb_models      = joblib.load(f"{MODELS_DIR}/xgb_models.pkl")
+        print(f"  ✅ XGBoost loaded ({len(xgb_models)} folds)")
+        cat_models      = joblib.load(f"{MODELS_DIR}/cat_models.pkl")
+        print(f"  ✅ CatBoost loaded ({len(cat_models)} folds)")
+        with open(f"{MODELS_DIR}/ensemble_config.json") as f:
+            ensemble_config = json.load(f)
+        print(f"  ✅ Config loaded")
+
         models_loaded = True
-        print(f"✅ All models loaded! AUC: {ensemble_config['final_auc']:.4f}")
+        print(f"✅ All models ready! AUC: {ensemble_config['final_auc']:.4f}")
     except Exception as e:
         print(f"❌ Model loading error: {e}")
+        import traceback; traceback.print_exc()
         models_loaded = False
 
 @app.on_event("startup")
@@ -42,8 +60,8 @@ async def startup():
     load_models()
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    orig_cols = [f"var_{i}" for i in range(200)]
-    for col in orig_cols:
+    for i in range(200):
+        col = f"var_{i}"
         val_counts = df[col].value_counts()
         df[f"{col}_count"]  = df[col].map(val_counts).fillna(0)
         df[f"{col}_unique"] = df[col].map(df[col].value_counts()).fillna(0)
@@ -77,7 +95,8 @@ class BatchPredictRequest(BaseModel):
 @app.get("/")
 def root():
     return {"status":"online","model":"Customer Transaction Prediction","version":"1.0.0",
-            "auc": ensemble_config["final_auc"] if ensemble_config else None,"models_loaded":models_loaded}
+            "auc": ensemble_config["final_auc"] if ensemble_config else None,
+            "models_loaded": models_loaded}
 
 @app.get("/health")
 def health():
@@ -85,11 +104,15 @@ def health():
 
 @app.get("/model-info")
 def model_info():
-    if not models_loaded: raise HTTPException(status_code=503, detail="Models not loaded")
+    if not models_loaded: raise HTTPException(status_code=503, detail="Models loading, please wait...")
     return {
         "model_type":          "Weighted Ensemble (LightGBM + XGBoost + CatBoost)",
         "auc":                 ensemble_config["final_auc"],
-        "weights":             {"LightGBM":round(ensemble_config["final_weights"][0],4),"XGBoost":round(ensemble_config["final_weights"][1],4),"CatBoost":round(ensemble_config["final_weights"][2],4)},
+        "weights":             {
+            "LightGBM": round(ensemble_config["final_weights"][0], 4),
+            "XGBoost":  round(ensemble_config["final_weights"][1], 4),
+            "CatBoost": round(ensemble_config["final_weights"][2], 4)
+        },
         "n_folds":             ensemble_config["n_folds"],
         "n_features":          len(ensemble_config["original_feature_cols"]),
         "engineered_features": len(ensemble_config["feature_cols"]),
@@ -100,7 +123,7 @@ def model_info():
 
 @app.post("/predict")
 def predict(req: PredictRequest):
-    if not models_loaded: raise HTTPException(status_code=503, detail="Models not loaded")
+    if not models_loaded: raise HTTPException(status_code=503, detail="Models loading, please wait...")
     if len(req.features) != 200: raise HTTPException(status_code=400, detail=f"Expected 200 features, got {len(req.features)}")
     try:
         start     = time.time()
@@ -123,7 +146,7 @@ def predict(req: PredictRequest):
 
 @app.post("/predict-batch")
 def predict_batch(req: BatchPredictRequest):
-    if not models_loaded: raise HTTPException(status_code=503, detail="Models not loaded")
+    if not models_loaded: raise HTTPException(status_code=503, detail="Models loading, please wait...")
     if not req.samples: raise HTTPException(status_code=400, detail="No samples provided")
     if len(req.samples) > 1000: raise HTTPException(status_code=400, detail="Max 1000 samples per batch")
     try:
@@ -133,14 +156,23 @@ def predict_batch(req: BatchPredictRequest):
         df        = engineer_features(df)
         probs     = predict_ensemble(df)
         threshold = ensemble_config["best_threshold"]
-        results   = [{"probability":round(float(p),6),"prediction":int(p>=threshold),"prediction_label":"Transaction" if p>=threshold else "No Transaction","confidence":round(float(max(p,1-p))*100,2)} for p in probs]
-        return {"results":results,"total":len(results),"transactions_detected":sum(r["prediction"] for r in results),"elapsed_seconds":round(time.time()-start,3)}
+        results   = [{
+            "probability":      round(float(p), 6),
+            "prediction":       int(p >= threshold),
+            "prediction_label": "Transaction" if p >= threshold else "No Transaction",
+            "confidence":       round(float(max(p, 1-p)) * 100, 2)
+        } for p in probs]
+        return {
+            "results":               results,
+            "total":                 len(results),
+            "transactions_detected": sum(r["prediction"] for r in results),
+            "elapsed_seconds":       round(time.time()-start, 3)
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/sample-prediction")
 def sample_prediction():
-    if not models_loaded: raise HTTPException(status_code=503, detail="Models not loaded")
+    if not models_loaded: raise HTTPException(status_code=503, detail="Models loading, please wait...")
     np.random.seed(42)
-    features = np.random.normal(0, 1, 200).tolist()
-    return predict(PredictRequest(features=features))
+    return predict(PredictRequest(features=np.random.normal(0, 1, 200).tolist()))
