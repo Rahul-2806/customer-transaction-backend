@@ -1,2 +1,0 @@
-[phases.setup]
-nixPkgs = ["libgomp", "gcc", "stdenv.cc.cc.lib"]
