@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pandas
+numpy
+scikit-learn
+lightgbm
+xgboost
+catboost
+joblib
+python-multipart
+setuptools
